@@ -47,46 +47,50 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 class ScanFileView(APIView):
-    def get_queryset(self):
-        return User.objects.all()
-    def post(self, request, format=any):
+    queryset = User.objects.all()
+    def post(self, request, format=None):
         # Get the uploaded file from the request
         uploaded_file = request.FILES.get('file')
         if not uploaded_file:
             return Response({"error": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # try:
-        # Create a Docker client
-        client = docker.from_env()
-        print('To Here')
-        # Run the antivirus engine container, passing the file to scan
-        container = client.containers.run(
-            image='clamav:latest',  # Replace with the appropriate image name
-            command=['clamscan', '-'],  # Example command for ClamAV
-            stdin_open=True,
-            tty=False,
-            detach=True,
-        )
+        try:
+            # Create a Docker client
+            client = docker.from_env()
 
-        # Write the file to the container's STDIN for scanning
-        container.exec_run(input=uploaded_file.read())
+            # Run the antivirus engine container, passing the file to scan
+            container = client.containers.run(
+                image='clamav/clamav:latest',
+                command=['clamscan', '-'],
+                stdin_open=True,
+                tty=False,
+                detach=True,
+            )
 
-        # Wait for the container to finish scanning
-        container.wait()
+            try:
+                # Write the file to the container's STDIN for scanning
+                container.exec_run(
+                    cmd=['bash', '-c', f'echo "{uploaded_file.read().decode()}" | clamscan -'],
+                    stdout=True,
+                    stderr=True,
+                )
 
-        # Get the container's exit code to determine the scan result
-        exit_code = container.attrs['State']['ExitCode']
+                # Wait for the container to finish scanning
+                container.wait()
 
-        # Handle the scan result based on the exit code
-        if exit_code == 0:
-            result = 'Clean'
-        else:
-            result = 'Infected'
+                # Get the container's exit code to determine the scan result
+                exit_code = container.attrs['State']['ExitCode']
 
-        # Clean up: Remove the container
-        container.remove()
+                # Handle the scan result based on the exit code
+                result = 'Clean' if exit_code == 0 else 'Infected'
+            finally:
+                # Stop the container
+                container.stop()
 
-        return Response({'result': result}, status=status.HTTP_200_OK)
+            # Remove the container after it has been stopped
+            container.remove()
 
-        # except Exception as e:
-        #     return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'result': result}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
